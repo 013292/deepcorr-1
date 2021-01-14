@@ -7,7 +7,8 @@ import pdb
 import h5py
 import glob
 from tqdm.notebook import tqdm
-
+from utils import GAN_Simulator
+from copy import deepcopy
 
 class Preprocess():
     '''
@@ -48,49 +49,72 @@ class Preprocess():
                 pickle.dump(dataset, f)
         return dataset
     
-    def get_xy(self, dataset):
+    def get_xy(self, dataset, gan_sim=False):
         '''
         dataset: list
+        gan_sim: If True, simulate GAN on ingress traffic of Tor.
         return: x: ndarray, for each dataset sample there are 1 positive(paired) flow + some negative(unpaired) flows.
                             each input data is in shape of [8 * flow_size].
                 y: ndarray
         '''
+        if gan_sim:
+            gan_dataset = GAN_Simulator(flow_size=self.flow_size)(deepcopy(dataset))
         n_pos = self.n_pos
         n_flows = self.n_flows
         flow_size = self.flow_size
         mod = self.mod
         x = np.zeros((n_flows, 8, flow_size))
+        if gan_sim:
+            x_gan = np.zeros_like(x)
+        else:
+            x_gan = None
         y = np.zeros((n_flows))
+        index = 0
         for i in tqdm(range(n_pos), desc='Generating x, y'):
-            index = mod * i
             x[index, 0, :] = np.array(dataset[i]['here'][0]['<-'][:flow_size])*1000.0
             x[index, 1, :] = np.array(dataset[i]['there'][0]['->'][:flow_size])*1000.0
             x[index, 2, :] = np.array(dataset[i]['there'][0]['<-'][:flow_size])*1000.0
             x[index, 3, :] = np.array(dataset[i]['here'][0]['->'][:flow_size])*1000.0
-            
             x[index, 4, :] = np.array(dataset[i]['here'][1]['<-'][:flow_size])/1000.0
             x[index, 5, :] = np.array(dataset[i]['there'][1]['->'][:flow_size])/1000.0
             x[index, 6, :] = np.array(dataset[i]['there'][1]['<-'][:flow_size])/1000.0
             x[index, 7, :] = np.array(dataset[i]['here'][1]['->'][:flow_size])/1000.0
-            
             y[index]=1
+            if gan_sim:
+                x_gan[index, 0, :] = np.array(gan_dataset[i]['here'][0]['<-'][:flow_size])*1000.0
+                x_gan[index, 1, :] = np.array(gan_dataset[i]['there'][0]['->'][:flow_size])*1000.0
+                x_gan[index, 2, :] = np.array(gan_dataset[i]['there'][0]['<-'][:flow_size])*1000.0
+                x_gan[index, 3, :] = np.array(gan_dataset[i]['here'][0]['->'][:flow_size])*1000.0
+                x_gan[index, 4, :] = np.array(gan_dataset[i]['here'][1]['<-'][:flow_size])/1000.0
+                x_gan[index, 5, :] = np.array(gan_dataset[i]['there'][1]['->'][:flow_size])/1000.0
+                x_gan[index, 6, :] = np.array(gan_dataset[i]['there'][1]['<-'][:flow_size])/1000.0
+                x_gan[index, 7, :] = np.array(gan_dataset[i]['here'][1]['->'][:flow_size])/1000.0
+            index += 1
             
             indices = list(range(n_pos))
             unpaired = indices[:i] + indices[i+1:]
             shuffle(unpaired)
             for j in range(self.n_neg_per_pos):
-                index = mod*i + j + 1
                 x[index, 0, :] = np.array(dataset[unpaired[j]]['here'][0]['<-'][:flow_size])*1000.0
                 x[index, 1, :] = np.array(dataset[i]['there'][0]['->'][:flow_size])*1000.0
                 x[index, 2, :] = np.array(dataset[i]['there'][0]['<-'][:flow_size])*1000.0
                 x[index, 3, :] = np.array(dataset[unpaired[j]]['here'][0]['->'][:flow_size])*1000.0
-
                 x[index, 4, :] = np.array(dataset[unpaired[j]]['here'][1]['<-'][:flow_size])/1000.0
                 x[index, 5, :] = np.array(dataset[i]['there'][1]['->'][:flow_size])/1000.0
                 x[index, 6, :] = np.array(dataset[i]['there'][1]['<-'][:flow_size])/1000.0
                 x[index, 7, :] = np.array(dataset[unpaired[j]]['here'][1]['->'][:flow_size])/1000.0
                 y[index]=0
-        return x, y
+                if gan_sim:
+                    x_gan[index, 0, :] = np.array(gan_dataset[unpaired[j]]['here'][0]['<-'][:flow_size])*1000.0
+                    x_gan[index, 1, :] = np.array(gan_dataset[i]['there'][0]['->'][:flow_size])*1000.0
+                    x_gan[index, 2, :] = np.array(gan_dataset[i]['there'][0]['<-'][:flow_size])*1000.0
+                    x_gan[index, 3, :] = np.array(gan_dataset[unpaired[j]]['here'][0]['->'][:flow_size])*1000.0
+                    x_gan[index, 4, :] = np.array(gan_dataset[unpaired[j]]['here'][1]['<-'][:flow_size])/1000.0
+                    x_gan[index, 5, :] = np.array(gan_dataset[i]['there'][1]['->'][:flow_size])/1000.0
+                    x_gan[index, 6, :] = np.array(gan_dataset[i]['there'][1]['<-'][:flow_size])/1000.0
+                    x_gan[index, 7, :] = np.array(gan_dataset[unpaired[j]]['here'][1]['->'][:flow_size])/1000.0 
+                index += 1
+        return x, y, x_gan
     
     def get_indices(self):
         '''
@@ -108,20 +132,22 @@ class Preprocess():
         return train_indices, test_indices
         
     
-    def gen_h5(self, overwrite=False):
+    def gen_h5(self, overwrite=False, gan_sim=False):
         if os.path.exists(self.h5_path) and not overwrite:
             print(f'{self.h5_path} exists already!')
             return
         dataset = self.get_dataset()
         self.n_pos = len(dataset)
         self.n_flows = self.n_pos * self.mod
-        x,y = self.get_xy(dataset)
+        x,y,x_gan = self.get_xy(dataset, gan_sim=gan_sim)
         train_indices, test_indices = self.get_indices()
                                      
         with h5py.File(self.h5_path, 'w') as h5f:
             g = h5f.create_group('data')
             g.create_dataset('x', data = x)
             g.create_dataset('y', data = y)
+            if gan_sim:
+                g.create_dataset('x_gan', data = x_gan)
             g = h5f.create_group('indices')
             g.create_dataset('train', data = train_indices)
             g.create_dataset('test', data = test_indices)
@@ -153,8 +179,8 @@ class Preprocess():
             pickle.dump(res,f)
         return                                     
     
-    def main_run(self):
-        self.gen_h5()
+    def main_run(self, gan_sim=False):
+        self.gen_h5(gan_sim=gan_sim)
         self.gen_crossval_indices()
         return
     
